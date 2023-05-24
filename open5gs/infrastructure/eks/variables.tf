@@ -1,3 +1,4 @@
+# practice push to two origins
 variable "aws_region" {
   type    = string
   default = "us-east-1"
