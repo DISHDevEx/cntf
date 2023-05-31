@@ -1,4 +1,15 @@
 module "eks" {
+  # aws-auth configmap
+  manage_aws_auth_configmap = true
+
+  aws_auth_users = [
+    {
+      userarn  = "arn:aws:iam::018300759195:user/terraform"
+      username = "terraform"
+      groups   = ["system:masters"]
+    }
+  ]
+  
   source  = "terraform-aws-modules/eks/aws"
   version = "18.20.5"
 

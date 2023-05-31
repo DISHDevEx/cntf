@@ -1,0 +1,132 @@
+workflow:
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+    - when: never
+
+variables:
+  TF_ROOT: open5gs/infrastructure/eks
+  TF_STATE_NAME: open5gs
+
+include:
+  - template: Terraform/Base.gitlab-ci.yml  
+  - template: Jobs/SAST-IaC.gitlab-ci.yml   
+
+stages:
+  - validate
+  - test
+  - build
+  - deploy
+  - cleanup 
+  - kics_test
+  - install_open5gs
+  - install_ueransim
+  - smoke_test 
+
+fmt:
+  extends: .terraform:fmt
+  needs: []
+  rules:
+    - changes:
+        paths:
+          - open5gs/infrastructure/eks/*.tf
+
+validate:
+  extends: .terraform:validate
+  needs: []
+  rules:
+    - changes:
+        paths:
+          - open5gs/infrastructure/eks/*.tf
+
+build:
+  extends: .terraform:build
+  environment:
+    name: $TF_STATE_NAME
+    action: prepare
+  rules:
+    - changes:
+        paths:
+          - open5gs/infrastructure/eks/*.tf
+
+deploy:
+  extends: .terraform:deploy
+  dependencies:
+    - build
+  environment:
+    name: $TF_STATE_NAME
+    action: start
+  rules:
+    - changes:
+        paths:
+          - open5gs/infrastructure/eks/*.tf
+
+cleanup:
+  extends: .terraform:destroy
+  dependencies:
+    - deploy
+  environment:
+    name: $TF_STATE_NAME
+    action: stop
+  when: manual
+
+kics_scan:
+  image: ubuntu:latest
+  stage: kics_test
+  allow_failure: true
+  script:
+    - apt-get update && apt-get install -y curl
+    - curl -sfL 'https://raw.githubusercontent.com/Checkmarx/kics/master/install.sh' | bash
+    - helm template open5gs openverso/open5gs --values open5gs_values.yml > open5gs.yaml
+    - kics scan -t Kubernetes open5gs.yaml | tee security-scan.txt
+  artifacts:
+    paths: 
+      - security-scan.txt
+      
+install_open5gs:
+  image:
+    name: alpine/helm
+    entrypoint: [""]
+  stage: install_open5gs
+  variables:
+    REGION: us-east-1
+    CLUSTER_NAME: cntf-open5gs-cluster
+  environment:
+    name: open5gs_cluster 
+  script:
+    - apk add --no-cache python3 py3-pip 
+    - pip3 install --upgrade pip 
+    - pip3 install --no-cache-dir awscli
+    - aws --version
+    - aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+    - helm repo add openverso https://gradiant.github.io/openverso-charts/
+    - helm install open5gs openverso/open5gs --values ./open5gs_values.yml
+
+install_ueransim:
+  image: alpine/helm
+  stage: install_ueransim
+  variables:
+    REGION: us-east-1
+    CLUSTER_NAME: cntf-open5gs-cluster
+  environment:
+    name: open5gs_cluster 
+  script: 
+    - apk add --no-cache python3 py3-pip 
+    - pip3 install --upgrade pip 
+    - pip3 install --no-cache-dir awscli
+    - aws --version
+    - aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+    - helm repo add openverso https://gradiant.github.io/openverso-charts/
+    - helm install ueransim-gnb openverso/ueransim-gnb --values ./openverso_ueransim_gnb_values.yml #added paths to created helm values files
+    - helm install ueransim-ues openverso/ueransim-ues --values ./openverso_ueransim_ues_values.yml
+
+smoke_test:
+  image: ubuntu:latest
+  stage: smoke_test
+  environment:
+    name: open5gs_cluster 
+  script:
+    - apt-get update && apt-get install -y curl
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/
+    - sh ./ueransim_smoke_test.sh
